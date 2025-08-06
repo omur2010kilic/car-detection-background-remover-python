@@ -1,59 +1,79 @@
-from fastapi import FastAPI, UploadFile, File, Request
-from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
-from rembg import remove
-from io import BytesIO
-from PIL import Image
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import StreamingResponse
 from ultralytics import YOLO
-import logging
+from PIL import Image
+import io
+import numpy as np
+import cv2
 
 app = FastAPI()
-model = YOLO('yolov8n.pt')  # Hızlı model (YOLOv8 nano)
 
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    return """
-    <html>
-        <head><title>Araba Arka Plan Silici + YOLOv8</title></head>
-        <body>
-            <h2>Araba fotoğrafınızı yükleyin</h2>
-            <form action="/remove-background/" enctype="multipart/form-data" method="post">
-                <input name="file" type="file" accept="image/*" required>
-                <input type="submit" value="Gönder">
-            </form>
-        </body>
-    </html>
-    """
+# YOLOv8 Segmentasyon Modeli (yolov8n-seg.pt gibi bir model)
+model = YOLO("yolov8n-seg.pt")  # veya kendi segmentasyon modelin
 
-@app.post("/remove-background/")
+@app.post("/remove_background")
 async def remove_background(file: UploadFile = File(...)):
+    # Resim kontrolü
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Lütfen bir resim dosyası yükleyin.")
+
     try:
-        
-        input_bytes = await file.read()
-        img = Image.open(BytesIO(input_bytes)).convert("RGB")
+        # Görseli oku
+        image_bytes = await file.read()
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        img_np = np.array(img)
 
-        i
-        results = model(img)
-        boxes = [
-            box.xyxy[0].tolist()
-            for r in results
-            for box in r.boxes
-            if int(box.cls[0]) == 2  # 2 = car (COCO class ID)
-        ]
+        # YOLO segmentasyonunu uygula
+        results = model(img_np)
+        result = results[0]
 
-        if not boxes:
-            return JSONResponse(status_code=404, content={"error": "Fotoğrafta araba bulunamadı."})
+        # Eğer maske yoksa hata ver
+        if result.masks is None or result.masks.data.shape[0] == 0:
+            raise HTTPException(status_code=404, detail="Resimde nesne bulunamadı.")
 
-    
-        x1, y1, x2, y2 = map(int, boxes[0])
-        cropped = img.crop((x1, y1, x2, y2))
+        # En büyük maskeyi seç
+        masks = result.masks.data.cpu().numpy()
+        largest_area = 0
+        largest_mask = None
 
-    
-        with BytesIO() as buffer:
-            cropped.save(buffer, format='PNG')
-            output = remove(buffer.getvalue())
+        for mask in masks:
+            area = np.sum(mask)
+            if area > largest_area:
+                largest_area = area
+                largest_mask = mask
 
-        return StreamingResponse(BytesIO(output), media_type="image/png")
+        if largest_mask is None:
+            raise HTTPException(status_code=404, detail="Geçerli bir nesne bulunamadı.")
+
+        # Orijinal resim boyutuna göre maskeyi yeniden boyutlandır
+        h, w = img_np.shape[:2]
+        mask_resized = cv2.resize(largest_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        # Maskeyi 0-255 arası değerlere çevir
+        mask_uint8 = (mask_resized * 255).astype(np.uint8)
+
+        # 🎯 KÖŞELERİ DÜZELT: Gaussian blur + morphology
+        blurred = cv2.GaussianBlur(mask_uint8, (21, 21), 0)
+        kernel = np.ones((5, 5), np.uint8)
+        cleaned = cv2.morphologyEx(blurred, cv2.MORPH_CLOSE, kernel)
+
+        # RGBA formatına geç, alfa kanalını uygula
+        img_rgba = img.convert("RGBA")
+        img_np_rgba = np.array(img_rgba)
+        img_np_rgba[..., 3] = cleaned
+
+        # PNG olarak kaydet
+        output_img = Image.fromarray(img_np_rgba)
+        buf = io.BytesIO()
+        output_img.save(buf, format="PNG")
+        buf.seek(0)
+
+        return StreamingResponse(buf, media_type="image/png")
 
     except Exception as e:
-        logging.exception("Hata oluştu:")
-        return JSONResponse(status_code=500, content={"error": f"Bir hata oluştu: {str(e)}"})
+        raise HTTPException(status_code=500, detail=f"Sunucu hatası: {str(e)}")
+
+
+@app.get("/")
+async def root():
+    return {"message": "Arka plan silici kral gibi çalışıyor 😎"}
