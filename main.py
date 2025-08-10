@@ -8,61 +8,61 @@ import cv2
 
 app = FastAPI()
 
-# YOLOv8 Segmentasyon Modeli (yolov8n-seg.pt gibi bir model)
-model = YOLO("yolov8n-seg.pt")  # veya kendi segmentasyon modelin
+# 📌 YOLO11 SEGMENTASYON modeli (maskeler için -seg şart)
+model = YOLO("yolo11n-seg.pt")  # veya kendi model dosyan
 
 @app.post("/remove_background")
 async def remove_background(file: UploadFile = File(...)):
-    # Resim kontrolü
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Lütfen bir resim dosyası yükleyin.")
 
     try:
-        # Görseli oku
         image_bytes = await file.read()
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         img_np = np.array(img)
 
-        # YOLO segmentasyonunu uygula
+        # 🔍 YOLO tahmini
         results = model(img_np)
         result = results[0]
 
-        # Eğer maske yoksa hata ver
-        if result.masks is None or result.masks.data.shape[0] == 0:
-            raise HTTPException(status_code=404, detail="Resimde nesne bulunamadı.")
+        mask_final = None
 
-        # En büyük maskeyi seç
-        masks = result.masks.data.cpu().numpy()
-        largest_area = 0
-        largest_mask = None
+        # 🎯 Önce segmentasyon maskesi var mı bak
+        if result.masks is not None and result.masks.data.shape[0] > 0:
+            masks = result.masks.data.cpu().numpy()
+            # En büyük maskeyi seç
+            largest_mask = max(masks, key=lambda m: np.sum(m))
+            mask_final = largest_mask.astype(np.uint8)
 
-        for mask in masks:
-            area = np.sum(mask)
-            if area > largest_area:
-                largest_area = area
-                largest_mask = mask
+        # ❗ Maske yoksa bbox üzerinden maske üret
+        if mask_final is None and len(result.boxes) > 0:
+            h, w = img_np.shape[:2]
+            mask_final = np.zeros((h, w), dtype=np.uint8)
+            for box in result.boxes.xyxy.cpu().numpy():
+                x1, y1, x2, y2 = box.astype(int)
+                mask_final[y1:y2, x1:x2] = 1  # dikdörtgen alanı doldur
 
-        if largest_mask is None:
-            raise HTTPException(status_code=404, detail="Geçerli bir nesne bulunamadı.")
+        if mask_final is None:
+            raise HTTPException(status_code=404, detail="Nesne tespit edilemedi.")
 
-        # Orijinal resim boyutuna göre maskeyi yeniden boyutlandır
+        # 📏 Maskeyi orijinal boyuta getir (gerekirse)
         h, w = img_np.shape[:2]
-        mask_resized = cv2.resize(largest_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+        mask_resized = cv2.resize(mask_final, (w, h), interpolation=cv2.INTER_NEAREST)
 
-        # Maskeyi 0-255 arası değerlere çevir
+        # 🎨 0-255 arası uint8
         mask_uint8 = (mask_resized * 255).astype(np.uint8)
 
-        # 🎯 KÖŞELERİ DÜZELT: Gaussian blur + morphology
+        # ✨ Kenar yumuşatma
         blurred = cv2.GaussianBlur(mask_uint8, (21, 21), 0)
         kernel = np.ones((5, 5), np.uint8)
         cleaned = cv2.morphologyEx(blurred, cv2.MORPH_CLOSE, kernel)
 
-        # RGBA formatına geç, alfa kanalını uygula
+        # 🖼 RGBA formatına geçir ve alfa uygula
         img_rgba = img.convert("RGBA")
         img_np_rgba = np.array(img_rgba)
         img_np_rgba[..., 3] = cleaned
 
-        # PNG olarak kaydet
+        # 📦 PNG olarak döndür
         output_img = Image.fromarray(img_np_rgba)
         buf = io.BytesIO()
         output_img.save(buf, format="PNG")
@@ -70,10 +70,12 @@ async def remove_background(file: UploadFile = File(...)):
 
         return StreamingResponse(buf, media_type="image/png")
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Sunucu hatası: {str(e)}")
 
 
 @app.get("/")
 async def root():
-    return {"message": "Arka plan silici kral gibi çalışıyor 😎"}
+    return {"message": "YOLO11 arka plan kaldırma servisi çalışıyor!"}
