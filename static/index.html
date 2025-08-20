@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Görsel Yükle</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Görsel Yükleme ve Gönderme</h1>
+        <div class="upload-box">
+            <input type="file" id="fileInput" accept="image/*">
+            <label for="fileInput">📷 Görsel Seç</label>
+        </div>
+        <input type="text" id="titleInput" placeholder="Başlık girin (opsiyonel)">
+        <button id="sendButton" class="btn">Gönder</button>
+        <p id="status"></p>
+    </div>
+
+    <script src="helper.js"></script>
+</body>
+</html>
